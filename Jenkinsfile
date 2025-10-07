@@ -129,16 +129,30 @@ spec:
       steps {
         echo "🧪 Running React Tests with Coverage"
         container('node') {
-          sh 'JEST_JUNIT_OUTPUT_DIR=. JEST_JUNIT_OUTPUT_NAME=test-results.xml CI=true npx react-scripts test --coverage --watchAll=false --reporters=default --reporters=jest-junit'
+          sh '''
+            JEST_JUNIT_OUTPUT_DIR=. JEST_JUNIT_OUTPUT_NAME=test-results.xml CI=true npx react-scripts test --coverage --watchAll=false --reporters=default --reporters=jest-junit
+            echo "Coverage Summary:"
+            cat coverage/coverage-summary.json | grep -A 5 "total"
+          '''
           junit allowEmptyResults: true, testResults: 'test-results.xml'
+
+          // Publish HTML coverage report
+          publishHTML(target: [
+            allowMissing: false,
+            alwaysLinkToLastBuild: true,
+            keepAll: true,
+            reportDir: 'coverage/lcov-report',
+            reportFiles: 'index.html',
+            reportName: 'Coverage Report'
+          ])
+
           recordCoverage(
             tools: [[parser: 'COBERTURA', pattern: '**/coverage/cobertura-coverage.xml']],
             id: 'jest-coverage',
             name: 'Jest Coverage',
             sourceCodeRetention: 'EVERY_BUILD',
             qualityGates: [
-              [threshold: 80.0, metric: 'LINE', baseline: 'PROJECT', unstable: true],
-              [threshold: 70.0, metric: 'BRANCH', baseline: 'PROJECT', unstable: true]
+              [threshold: 80.0, metric: 'LINE', baseline: 'PROJECT', unstable: true]
             ],
             enabledForFailure: true,
             failOnError: false

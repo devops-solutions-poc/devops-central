@@ -11,23 +11,42 @@ spec:
   - name: npm-cache
     persistentVolumeClaim:
       claimName: npm-cache-pvc
+  - name: docker-storage
+    emptyDir: {}
   containers:
   - name: node
-    image: node:22.18.0
+    image: node:22-alpine  # based on node version
     command:
     - cat
     tty: true
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+      limits:
+        memory: "1Gi"
+        cpu: "1000m"
     volumeMounts:
     - name: npm-cache
       mountPath: /root/.npm 
   - name: docker
-    image: docker:20.10-dind
+    image: docker:27-dind
     securityContext:
       privileged: true
     tty: true
-    args:
-      - --host=tcp://0.0.0.0:2375
-      - --host=unix:///var/run/docker.sock
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+    volumeMounts:
+    - name: docker-storage
+      mountPath: /var/lib/docker
+    env:
+    - name: DOCKER_TLS_CERTDIR
+      value: ""
       '''
     }
   }
@@ -37,7 +56,7 @@ spec:
     DEVTRON_URL = 'http://80.225.201.22:8000/orchestrator/webhook/ext-ci/3'
   }
   triggers {
-        pollSCM('* * * * *')
+        pollSCM('H/5 * * * *')
   }
   options {
     disableConcurrentBuilds()
@@ -55,21 +74,41 @@ spec:
     }
 
     stage('Validate Commit Message') {
-      when { expression { env.BRANCH_NAME.startsWith("feature/") } }
-      steps {
-        script {
-          def commitMsg = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
-          echo "Latest commit message: ${commitMsg}"
-          def parts = commitMsg.split('#')
-          if (parts.length != 2) error "❌ Commit message must contain a '#' followed by Jira ID!"
-          def msgText = parts[0].trim()
-          def jiraId = parts[1].trim()
-          if (msgText.length() < 30) error "❌ Commit message text must be at least 30 characters!"
-          if (!jiraId.matches("[A-Z]{2,}-\\d+")) error "❌ Jira ID after '#' is invalid! Example: ABC-123"
-          echo "✅ Commit message validation passed"
+            when { expression { env.BRANCH_NAME.startsWith("feature/") } }
+              steps {
+                script {
+            // Get the latest commit message
+            def commitMsg = sh(
+                script: "git log -1 --pretty=%B",
+                returnStdout: true
+            ).trim()
+
+            echo "Latest commit message: ${commitMsg}"
+
+            // Split by '#' to separate message and Jira ID
+            def parts = commitMsg.split('#')
+
+            if (parts.length != 2) {
+                error "❌ Commit message must contain a '#' followed by Jira ID!"
+            }
+
+            def msgText = parts[0].trim()
+            def jiraId = parts[1].trim()
+
+            // Check message length
+            if (msgText.length() < 30) {
+                error "❌ Commit message text must be at least 30 characters!"
+            }
+
+            // Check Jira ID format (e.g., ABC-123 or PC-01)
+            if (!jiraId.matches("^[A-Z]{2,}-\\d+\$")) {
+                error "❌ Jira ID after '#' is invalid! Format: PROJECT-123 (e.g., PC-01, ABC-123). Received: '${jiraId}'"
+            }
+
+            echo "✅ Commit message validation passed"
         }
-      }
     }
+}
 
     stage('Install Dependencies') {
       steps {
@@ -92,44 +131,39 @@ spec:
         container('node') {
           sh 'JEST_JUNIT_OUTPUT_DIR=. JEST_JUNIT_OUTPUT_NAME=test-results.xml CI=true npx react-scripts test --coverage --watchAll=false --reporters=default --reporters=jest-junit'
           junit allowEmptyResults: true, testResults: 'test-results.xml'
-      publishHTML(target: [
-      reportDir: 'coverage/lcov-report',
-      reportFiles: 'index.html',
-      reportName: 'Coverage Report',
-      keepAll: true,
-      alwaysLinkToLastBuild: true,
-      allowMissing: true,
-      includes: '**/*'
-])
+          recordCoverage(
+            tools: [[parser: 'COBERTURA', pattern: '**/coverage/cobertura-coverage.xml']],
+            id: 'jest-coverage',
+            name: 'Jest Coverage',
+            sourceCodeRetention: 'EVERY_BUILD'
+          ) 
         }
       }
     }
 
-    // stage('Build') {
-    //   when { anyOf { expression { env.BRANCH_NAME.startsWith("feature/") }; branch 'develop' } }
-    //   steps {
-    //     echo "🚀 Building React App"
-    //     container('node') {
-    //       sh '''
-    //         npm run build
-    //       '''
-    //     }
-    //   }
-    // }
 
     stage('SonarQube Scan') {
       when { expression { env.BRANCH_NAME.startsWith("feature/") } }
-      steps { echo "🔍 Running SonarQube Scan" }
+      steps {
+        echo "🔍 SonarQube Scan - To be implemented"
+        echo "⚠️  Skipping for now"
+      }
     }
 
     stage('OWASP Dependency Check') {
       when { expression { env.BRANCH_NAME.startsWith("feature/") } }
-      steps { echo "🛡️ Running OWASP Dependency Check" }
+      steps {
+        echo "🛡️ OWASP Dependency Check - To be implemented"
+        echo "⚠️  Skipping for now"
+      }
     }
 
     stage('Gitleaks Scan') {
       when { expression { env.BRANCH_NAME.startsWith("feature/") } }
-      steps { echo "🔒 Running Gitleaks Scan" }
+      steps {
+        echo "🔒 Gitleaks Scan - To be implemented"
+        echo "⚠️  Skipping for now"
+      }
     }
 
     stage('Build Docker Image') {
@@ -179,7 +213,7 @@ spec:
               curl --location --request POST "$DEVTRON_URL" \
                    --header "Content-Type: application/json" \
                    --header "api-token: $DEVTRON_TOKEN" \
-                   --data-raw '{ "dockerImage": "gauravt11/${DOCKER_IMAGE}" }'
+                   --data-raw '{ "dockerImage": "${DOCKER_USER}/${DOCKER_IMAGE}" }'
             """
           }
         }

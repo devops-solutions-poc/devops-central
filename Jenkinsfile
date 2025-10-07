@@ -135,7 +135,13 @@ spec:
             tools: [[parser: 'COBERTURA', pattern: '**/coverage/cobertura-coverage.xml']],
             id: 'jest-coverage',
             name: 'Jest Coverage',
-            sourceCodeRetention: 'EVERY_BUILD'
+            sourceCodeRetention: 'EVERY_BUILD',
+            qualityGates: [
+              [threshold: 80.0, metric: 'LINE', baseline: 'PROJECT', unstable: true],
+              [threshold: 70.0, metric: 'BRANCH', baseline: 'PROJECT', unstable: true]
+            ],
+            enabledForFailure: true,
+            failOnError: false
           ) 
         }
       }

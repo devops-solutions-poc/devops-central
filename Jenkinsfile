@@ -23,10 +23,10 @@ spec:
     tty: true
     resources:
       requests:
-        memory: "512Mi"
+        memory: "1Gi"
         cpu: "500m"
       limits:
-        memory: "1Gi"
+        memory: "3Gi"  # Increased for OWASP Dependency Check
         cpu: "1000m"
     volumeMounts:
     - name: npm-cache
@@ -221,9 +221,12 @@ spec:
                 fi
               '''
 
-              // Run scan with API key
+              // Run scan with API key and increased memory
               sh """
                 echo "🚀 Running OWASP Dependency Check scan"
+
+                # Set Java options for better memory management
+                export JAVA_OPTS="-Xmx2048m -Xms512m"
 
                 /root/.dependency-check-12.1.0/bin/dependency-check.sh \
                     --project "node-project" \
@@ -239,10 +242,11 @@ spec:
                     --suppression owasp-suppressions.xml \
                     --disableOssIndex \
                     --enableExperimental \
+                    --javaOpts "-Xmx2048m -Xms512m" \
                     || true
 
                 echo "✅ Scan completed. Reports available in odc-report/"
-                ls -lh odc-report
+                ls -lh odc-report || echo "No reports generated"
               """
             }
 

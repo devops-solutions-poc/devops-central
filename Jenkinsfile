@@ -149,7 +149,6 @@ spec:
           sh '''
             JEST_JUNIT_OUTPUT_DIR=. JEST_JUNIT_OUTPUT_NAME=test-results.xml CI=true npx react-scripts test --coverage --watchAll=false --reporters=default --reporters=jest-junit
             echo "Coverage Summary:"
-            cat coverage/coverage-summary.json | grep -A 5 "total"
           '''
           junit allowEmptyResults: true, testResults: 'test-results.xml'
 

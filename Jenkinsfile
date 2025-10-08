@@ -5,7 +5,7 @@ pipeline {
 apiVersion: v1
 kind: Pod
 spec:
-  activeDeadlineSeconds: 360
+  activeDeadlineSeconds: 3600
   restartPolicy: Never
   imagePullSecrets:
   - name: dockerhub-secret
@@ -159,7 +159,9 @@ spec:
             keepAll: true,
             reportDir: 'coverage/lcov-report',
             reportFiles: 'index.html',
-            reportName: 'Coverage Report'
+            reportName: 'Coverage Report',
+            escapeUnderscores: false,
+            includes: '**/*'
           ])
 
           recordCoverage(
@@ -242,7 +244,6 @@ spec:
                     --suppression owasp-suppressions.xml \
                     --disableOssIndex \
                     --enableExperimental \
-                    --javaOpts "-Xmx2048m -Xms512m" \
                     || true
 
                 echo "✅ Scan completed. Reports available in odc-report/"

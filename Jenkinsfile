@@ -225,7 +225,7 @@ spec:
               sh """
                 echo "🚀 Running OWASP Dependency Check scan"
 
-                /root/.dependency-check-10.0.4/bin/dependency-check.sh \
+                /root/.dependency-check-12.1.0/bin/dependency-check.sh \
                     --project "node-project" \
                     --scan . \
                     --format HTML \

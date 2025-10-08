@@ -193,8 +193,15 @@ spec:
                 mkdir -p odc-report
 
                 # Define Dependency Check version and cache location
-                DEP_CHECK_VERSION=10.0.4
+                DEP_CHECK_VERSION=12.1.0
                 CACHE_DIR=/root/.dependency-check-${DEP_CHECK_VERSION}
+
+                # Install Java (required for OWASP Dependency Check)
+                if ! command -v java &> /dev/null; then
+                  echo "📦 Installing OpenJDK (first time only)..."
+                  apk add --no-cache openjdk17-jre
+                  echo "✅ Java installed: $(java -version 2>&1 | head -n 1)"
+                fi
 
                 # Check if already cached
                 if [ -d "$CACHE_DIR" ]; then

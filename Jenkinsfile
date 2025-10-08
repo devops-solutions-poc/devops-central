@@ -5,6 +5,8 @@ pipeline {
 apiVersion: v1
 kind: Pod
 spec:
+  activeDeadlineSeconds: 360
+  restartPolicy: Never
   imagePullSecrets:
   - name: dockerhub-secret
   volumes:
@@ -32,14 +34,14 @@ spec:
   - name: docker
     image: docker:27-dind
     securityContext:
-      privileged: true
+      privileged: true  # Required for DinD - consider Kaniko later for rootless builds
     tty: true
     resources:
       requests:
         memory: "1Gi"
         cpu: "500m"
       limits:
-        memory: "2Gi"
+        memory: "2Gi"  # Increased for better stability
         cpu: "1000m"
     volumeMounts:
     - name: docker-storage
@@ -47,13 +49,28 @@ spec:
     env:
     - name: DOCKER_TLS_CERTDIR
       value: ""
+    - name: DOCKER_DRIVER
+      value: "overlay2"  # Better performance
+  - name: gitleaks
+    image: zricethezav/gitleaks:latest
+    command:
+    - cat
+    tty: true
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
       '''
     }
   }
 
   environment {
     DOCKER_IMAGE = "node-project:${BUILD_NUMBER}"
-    DEVTRON_URL = 'http://80.225.201.22:8000/orchestrator/webhook/ext-ci/3'
+    DEVTRON_BASE_URL = credentials('DEVTRON-BASE-URL') // Store base URL in credentials
+    DEVTRON_ENDPOINT = '/orchestrator/webhook/ext-ci/3' // App-specific endpoint
   }
   triggers {
         pollSCM('H/5 * * * *')
@@ -162,29 +179,200 @@ spec:
     }
 
 
-    stage('SonarQube Scan') {
-      when { expression { env.BRANCH_NAME.startsWith("feature/") } }
-      steps {
-        echo "🔍 SonarQube Scan - To be implemented"
-        echo "⚠️  Skipping for now"
-      }
-    }
-
     stage('OWASP Dependency Check') {
       when { expression { env.BRANCH_NAME.startsWith("feature/") } }
       steps {
-        echo "🛡️ OWASP Dependency Check - To be implemented"
-        echo "⚠️  Skipping for now"
+        container('node') {
+          echo "🛡️ Running OWASP Dependency Check (Universal - Maven/Node/Python)"
+
+          script {
+            withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_API_KEY')]) {
+              // Download and setup with caching
+              sh '''
+                # Create directories
+                mkdir -p odc-report
+
+                # Define Dependency Check version and cache location
+                DEP_CHECK_VERSION=10.0.4
+                CACHE_DIR=/root/.dependency-check-${DEP_CHECK_VERSION}
+
+                # Check if already cached
+                if [ -d "$CACHE_DIR" ]; then
+                  echo "✅ Using cached OWASP Dependency-Check v${DEP_CHECK_VERSION}"
+                else
+                  echo "📥 Downloading OWASP Dependency-Check v${DEP_CHECK_VERSION} (first time only)..."
+
+                  # Install required tools
+                  apk add --no-cache wget unzip
+
+                  # Download and extract to cache
+                  wget -q -O dependency-check.zip https://github.com/jeremylong/DependencyCheck/releases/download/v${DEP_CHECK_VERSION}/dependency-check-${DEP_CHECK_VERSION}-release.zip
+                  unzip -q dependency-check.zip -d /root/
+                  mv /root/dependency-check $CACHE_DIR
+                  rm dependency-check.zip
+
+                  echo "✅ OWASP Dependency-Check cached for future builds"
+                fi
+              '''
+
+              // Run scan with API key
+              sh """
+                echo "🚀 Running OWASP Dependency Check scan"
+
+                /root/.dependency-check-10.0.4/bin/dependency-check.sh \
+                    --project "node-project" \
+                    --scan . \
+                    --format HTML \
+                    --format JSON \
+                    --format XML \
+                    --out odc-report \
+                    --nvdApiKey "\${NVD_API_KEY}" \
+                    --exclude "**/coverage/**" \
+                    --exclude "**/node_modules/**" \
+                    --exclude "**/test/**" \
+                    --suppression owasp-suppressions.xml \
+                    --disableOssIndex \
+                    --enableExperimental \
+                    || true
+
+                echo "✅ Scan completed. Reports available in odc-report/"
+                ls -lh odc-report
+              """
+            }
+
+            // Publish vulnerability statistics
+            script {
+              try {
+                recordIssues(
+                  tools: [dependencyCheck(pattern: 'odc-report/dependency-check-report.xml')],
+                  qualityGates: [[threshold: 1, type: 'TOTAL', unstable: false]],
+                  healthy: 0,
+                  unhealthy: 1
+                )
+              } catch (Exception e1) {
+                echo "⚠️ recordIssues failed, trying dependencyCheckPublisher..."
+                try {
+                  dependencyCheckPublisher pattern: 'odc-report/dependency-check-report.xml'
+                } catch (Exception e2) {
+                  echo "⚠️ Both methods failed. Check OWASP Dependency-Check plugin is installed."
+                  echo "HTML report will still be available."
+                }
+              }
+            }
+
+            // Publish HTML report
+            publishHTML([
+              allowMissing: false,
+              alwaysLinkToLastBuild: true,
+              keepAll: true,
+              reportDir: 'odc-report',
+              reportFiles: 'dependency-check-report.html',
+              reportName: 'OWASP Dependency Check Report',
+              reportTitles: 'OWASP Dependency Check',
+              escapeUnderscores: false,
+              includes: '**/*'
+            ])
+          }
+        }
       }
     }
 
-    stage('Gitleaks Scan') {
-      when { expression { env.BRANCH_NAME.startsWith("feature/") } }
-      steps {
-        echo "🔒 Gitleaks Scan - To be implemented"
-        echo "⚠️  Skipping for now"
-      }
-    }
+    // stage('Gitleaks Scan') {
+    //   when { expression { env.BRANCH_NAME.startsWith("feature/") } }
+    //   steps {
+    //     echo "🔒 Scanning for secrets with Gitleaks"
+    //     container('gitleaks') {
+    //       script {
+    //         def exitCode = sh(
+    //           script: '''
+    //             gitleaks detect \
+    //               --source . \
+    //               --report-format json \
+    //               --report-path gitleaks-report.json \
+    //               --verbose \
+    //               --redact \
+    //               --no-git
+    //           ''',
+    //           returnStatus: true
+    //         )
+
+    //         // Publish report regardless of result
+    //         if (fileExists('gitleaks-report.json')) {
+    //           def report = readJSON file: 'gitleaks-report.json'
+
+    //           if (report.size() > 0) {
+    //             echo "⚠️  Found ${report.size()} potential secret(s)!"
+
+    //             // Create HTML report
+    //             writeFile file: 'gitleaks-report.html', text: """
+    //               <!DOCTYPE html>
+    //               <html>
+    //               <head>
+    //                 <title>Gitleaks Security Scan Report</title>
+    //                 <style>
+    //                   body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+    //                   h1 { color: #d9534f; }
+    //                   .summary { background: white; padding: 20px; border-radius: 5px; margin-bottom: 20px; }
+    //                   .secret { background: white; border-left: 4px solid #d9534f; padding: 15px; margin: 10px 0; border-radius: 3px; }
+    //                   .info { color: #666; margin: 5px 0; }
+    //                   .file { font-weight: bold; color: #0275d8; }
+    //                   .rule { color: #5bc0de; font-weight: 500; }
+    //                   pre { background: #f5f5f5; padding: 10px; overflow-x: auto; border-radius: 3px; }
+    //                   .footer { margin-top: 30px; padding: 20px; background: white; border-radius: 5px; }
+    //                 </style>
+    //               </head>
+    //               <body>
+    //                 <h1>🔒 Gitleaks Security Scan Report</h1>
+    //                 <div class="summary">
+    //                   <h2>Summary</h2>
+    //                   <p>Found <strong style="color: #d9534f;">${report.size()}</strong> potential secret(s)</p>
+    //                   <p><strong>Action Required:</strong> Review and remove all detected secrets immediately!</p>
+    //                 </div>
+    //                 ${report.collect { leak ->
+    //                   """
+    //                   <div class="secret">
+    //                     <p class="file">📁 File: ${leak.File}</p>
+    //                     <p class="rule">🔍 Rule: ${leak.RuleID} - ${leak.Description ?: 'No description'}</p>
+    //                     <p class="info">📍 Line: ${leak.StartLine ?: 'N/A'}</p>
+    //                     <pre>${leak.Secret?.take(60) ?: '[REDACTED]'}...</pre>
+    //                     ${leak.Commit ? "<p class=\"info\">🔖 Commit: ${leak.Commit}</p>" : ""}
+    //                   </div>
+    //                   """
+    //                 }.join('')}
+    //                 <div class="footer">
+    //                   <h3>Next Steps:</h3>
+    //                   <ol>
+    //                     <li>Remove all detected secrets from the codebase</li>
+    //                     <li>Rotate/revoke any exposed credentials immediately</li>
+    //                     <li>Use environment variables or secret management tools</li>
+    //                     <li>Add patterns to .gitleaks.toml if false positives</li>
+    //                   </ol>
+    //                 </div>
+    //               </body>
+    //               </html>
+    //             """
+
+    //             publishHTML([
+    //               allowMissing: false,
+    //               alwaysLinkToLastBuild: true,
+    //               keepAll: true,
+    //               reportDir: '.',
+    //               reportFiles: 'gitleaks-report.html',
+    //               reportName: 'Gitleaks Security Report'
+    //             ])
+
+    //             // Fail the build if secrets found
+    //             error("❌ Gitleaks found ${report.size()} potential secret(s). Check the report and remove them!")
+    //           } else {
+    //             echo "✅ No secrets detected!"
+    //           }
+    //         } else {
+    //           echo "✅ No secrets detected!"
+    //         }
+    //       }
+    //     }
+    //   }
+    // }
 
     stage('Build Docker Image') {
       when { branch 'develop' }
@@ -192,10 +380,20 @@ spec:
         container('docker') {
           echo "🐳 Building Docker image..."
           withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-            sh 'echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin || true'
+            sh '''
+              set +x  # Disable command echo for security
+              echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+              LOGIN_STATUS=$?
+              set -x  # Re-enable command echo
+
+              if [ $LOGIN_STATUS -ne 0 ]; then
+                echo "❌ Docker login failed"
+                exit 1
+              fi
+            '''
           }
           sh "docker build --pull -t ${DOCKER_IMAGE} . && docker images ${DOCKER_IMAGE}"
-          sh 'docker logout || true'
+          sh 'docker logout'
         }
       }
     }
@@ -206,10 +404,14 @@ spec:
         container('docker') {
           echo "🚀 Pushing Docker image to Docker Hub"
           withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-            sh """
+            sh '''
+              set +x  # Disable command echo for security
               echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-              docker tag ${DOCKER_IMAGE} ${DOCKER_USER}/${DOCKER_IMAGE}
-              docker push ${DOCKER_USER}/${DOCKER_IMAGE}
+              set -x  # Re-enable command echo
+            '''
+            sh """
+              docker tag ${DOCKER_IMAGE} \${DOCKER_USER}/${DOCKER_IMAGE}
+              docker push \${DOCKER_USER}/${DOCKER_IMAGE}
               docker logout
             """
           }
@@ -230,10 +432,10 @@ spec:
           echo "🚀 Triggering Devtron Deployment"
           withCredentials([string(credentialsId: 'DEVTRON-TOKEN', variable: 'DEVTRON_TOKEN')]) {
             sh """
-              curl --location --request POST "$DEVTRON_URL" \
+              curl --location --request POST "${DEVTRON_BASE_URL}${DEVTRON_ENDPOINT}" \
                    --header "Content-Type: application/json" \
-                   --header "api-token: $DEVTRON_TOKEN" \
-                   --data-raw '{ "dockerImage": "${DOCKER_USER}/${DOCKER_IMAGE}" }'
+                   --header "api-token: \$DEVTRON_TOKEN" \
+                   --data-raw '{ "dockerImage": "\${DOCKER_USER}/${DOCKER_IMAGE}" }'
             """
           }
         }
@@ -241,7 +443,15 @@ spec:
     }
     always {
       echo "✅ Pipeline finished for branch: ${env.BRANCH_NAME}"
-      
+
+      // Print resource usage statistics
+      script {
+        sh '''
+          echo "📊 Resource Usage Summary:"
+          echo "================================"
+          kubectl top pods -n jenkins --selector=jenkins=slave 2>/dev/null || echo "⚠️  Metrics server not available"
+        '''
+      }
     }
   }
 }

@@ -180,118 +180,6 @@ spec:
       }
     }
 
-
-    stage('OWASP Dependency Check') {
-      when { expression { env.BRANCH_NAME.startsWith("feature/") } }
-      steps {
-        container('node') {
-          echo "🛡️ Running OWASP Dependency Check (Universal - Maven/Node/Python)"
-
-          script {
-            withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_API_KEY')]) {
-              // Download and setup with caching
-              sh '''
-                # Create directories
-                mkdir -p odc-report
-
-                # Define Dependency Check version and cache location (organized structure)
-                DEP_CHECK_VERSION=12.1.0
-                CACHE_DIR=/root/.cache/owasp/dependency-check-${DEP_CHECK_VERSION}
-
-                # Install Java (required for OWASP Dependency Check)
-                if ! command -v java &> /dev/null; then
-                  echo "📦 Installing OpenJDK 21 (first time only)..."
-                  apk add --no-cache openjdk21-jre wget unzip
-                  echo "✅ Java installed: $(java -version 2>&1 | head -n 1)"
-                else
-                  # Ensure wget and unzip are available
-                  apk add --no-cache wget unzip 2>/dev/null || true
-                fi
-
-                # Check if already cached
-                if [ -d "$CACHE_DIR" ]; then
-                  echo "✅ Using cached OWASP Dependency-Check v${DEP_CHECK_VERSION}"
-                else
-                  echo "📥 Downloading OWASP Dependency-Check v${DEP_CHECK_VERSION} (first time only)..."
-
-                  # Ensure parent directory exists
-                  mkdir -p /root/.cache/owasp
-
-                  # Download and extract to cache
-                  wget -q -O dependency-check.zip https://github.com/jeremylong/DependencyCheck/releases/download/v${DEP_CHECK_VERSION}/dependency-check-${DEP_CHECK_VERSION}-release.zip
-                  unzip -q dependency-check.zip -d /root/.cache/owasp/
-                  mv /root/.cache/owasp/dependency-check $CACHE_DIR
-                  rm dependency-check.zip
-
-                  echo "✅ OWASP Dependency-Check cached in organized directory for future builds"
-                fi
-              '''
-
-              // Run scan with API key and increased memory
-              sh """
-                echo "🚀 Running OWASP Dependency Check scan"
-
-                # Set Java options for better memory management
-                export JAVA_OPTS="-Xmx2048m -Xms512m"
-
-                /root/.cache/owasp/dependency-check-12.1.0/bin/dependency-check.sh \
-                    --project "node-project" \
-                    --scan . \
-                    --format HTML \
-                    --format JSON \
-                    --format XML \
-                    --out odc-report \
-                    --nvdApiKey "\${NVD_API_KEY}" \
-                    --exclude "**/coverage/**" \
-                    --exclude "**/node_modules/**" \
-                    --exclude "**/test/**" \
-                    --suppression owasp-suppressions.xml \
-                    --disableOssIndex \
-                    --enableExperimental \
-                    || true
-
-                echo "✅ Scan completed. Reports available in odc-report/"
-                ls -lh odc-report || echo "No reports generated"
-              """
-            }
-
-            // Publish vulnerability statistics
-            script {
-              try {
-                recordIssues(
-                  tools: [dependencyCheck(pattern: 'odc-report/dependency-check-report.xml')],
-                  qualityGates: [[threshold: 1, type: 'TOTAL', unstable: false]],
-                  healthy: 0,
-                  unhealthy: 1
-                )
-              } catch (Exception e1) {
-                echo "⚠️ recordIssues failed, trying dependencyCheckPublisher..."
-                try {
-                  dependencyCheckPublisher pattern: 'odc-report/dependency-check-report.xml'
-                } catch (Exception e2) {
-                  echo "⚠️ Both methods failed. Check OWASP Dependency-Check plugin is installed."
-                  echo "HTML report will still be available."
-                }
-              }
-            }
-
-            // Publish HTML report
-            publishHTML([
-              allowMissing: false,
-              alwaysLinkToLastBuild: true,
-              keepAll: true,
-              reportDir: 'odc-report',
-              reportFiles: 'dependency-check-report.html',
-              reportName: 'OWASP Dependency Check Report',
-              reportTitles: 'OWASP Dependency Check',
-              escapeUnderscores: false,
-              includes: '**/*'
-            ])
-          }
-        }
-      }
-    }
-
     stage('Gitleaks Scan') {
       when { expression { env.BRANCH_NAME.startsWith("feature/") } }
       steps {
@@ -490,6 +378,119 @@ spec:
         }
       }
     }
+
+    stage('OWASP Dependency Check') {
+      when { expression { env.BRANCH_NAME.startsWith("feature/") } }
+      steps {
+        container('node') {
+          echo "🛡️ Running OWASP Dependency Check (Universal - Maven/Node/Python)"
+
+          script {
+            withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_API_KEY')]) {
+              // Download and setup with caching
+              sh '''
+                # Create directories
+                mkdir -p odc-report
+
+                # Define Dependency Check version and cache location (organized structure)
+                DEP_CHECK_VERSION=12.1.0
+                CACHE_DIR=/root/.cache/owasp/dependency-check-${DEP_CHECK_VERSION}
+
+                # Install Java (required for OWASP Dependency Check)
+                if ! command -v java &> /dev/null; then
+                  echo "📦 Installing OpenJDK 21 (first time only)..."
+                  apk add --no-cache openjdk21-jre wget unzip
+                  echo "✅ Java installed: $(java -version 2>&1 | head -n 1)"
+                else
+                  # Ensure wget and unzip are available
+                  apk add --no-cache wget unzip 2>/dev/null || true
+                fi
+
+                # Check if already cached
+                if [ -d "$CACHE_DIR" ]; then
+                  echo "✅ Using cached OWASP Dependency-Check v${DEP_CHECK_VERSION}"
+                else
+                  echo "📥 Downloading OWASP Dependency-Check v${DEP_CHECK_VERSION} (first time only)..."
+
+                  # Ensure parent directory exists
+                  mkdir -p /root/.cache/owasp
+
+                  # Download and extract to cache
+                  wget -q -O dependency-check.zip https://github.com/jeremylong/DependencyCheck/releases/download/v${DEP_CHECK_VERSION}/dependency-check-${DEP_CHECK_VERSION}-release.zip
+                  unzip -q dependency-check.zip -d /root/.cache/owasp/
+                  mv /root/.cache/owasp/dependency-check $CACHE_DIR
+                  rm dependency-check.zip
+
+                  echo "✅ OWASP Dependency-Check cached in organized directory for future builds"
+                fi
+              '''
+
+              // Run scan with API key and increased memory
+              sh """
+                echo "🚀 Running OWASP Dependency Check scan"
+
+                # Set Java options for better memory management
+                export JAVA_OPTS="-Xmx2048m -Xms512m"
+
+                /root/.cache/owasp/dependency-check-12.1.0/bin/dependency-check.sh \
+                    --project "node-project" \
+                    --scan . \
+                    --format HTML \
+                    --format JSON \
+                    --format XML \
+                    --out odc-report \
+                    --nvdApiKey "\${NVD_API_KEY}" \
+                    --exclude "**/coverage/**" \
+                    --exclude "**/node_modules/**" \
+                    --exclude "**/test/**" \
+                    --suppression owasp-suppressions.xml \
+                    --disableOssIndex \
+                    --enableExperimental \
+                    || true
+
+                echo "✅ Scan completed. Reports available in odc-report/"
+                ls -lh odc-report || echo "No reports generated"
+              """
+            }
+
+            // Publish vulnerability statistics
+            script {
+              try {
+                recordIssues(
+                  tools: [dependencyCheck(pattern: 'odc-report/dependency-check-report.xml')],
+                  qualityGates: [[threshold: 1, type: 'TOTAL', unstable: false]],
+                  healthy: 0,
+                  unhealthy: 1
+                )
+              } catch (Exception e1) {
+                echo "⚠️ recordIssues failed, trying dependencyCheckPublisher..."
+                try {
+                  dependencyCheckPublisher pattern: 'odc-report/dependency-check-report.xml'
+                } catch (Exception e2) {
+                  echo "⚠️ Both methods failed. Check OWASP Dependency-Check plugin is installed."
+                  echo "HTML report will still be available."
+                }
+              }
+            }
+
+            // Publish HTML report
+            publishHTML([
+              allowMissing: false,
+              alwaysLinkToLastBuild: true,
+              keepAll: true,
+              reportDir: 'odc-report',
+              reportFiles: 'dependency-check-report.html',
+              reportName: 'OWASP Dependency Check Report',
+              reportTitles: 'OWASP Dependency Check',
+              escapeUnderscores: false,
+              includes: '**/*'
+            ])
+          }
+        }
+      }
+    }
+
+    
 
     stage('Build Docker Image') {
       when { branch 'develop' }

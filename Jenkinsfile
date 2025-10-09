@@ -193,15 +193,18 @@ spec:
                 # Create directories
                 mkdir -p odc-report
 
-                # Define Dependency Check version and cache location
+                # Define Dependency Check version and cache location (organized structure)
                 DEP_CHECK_VERSION=12.1.0
-                CACHE_DIR=/root/.dependency-check-${DEP_CHECK_VERSION}
+                CACHE_DIR=/root/.cache/owasp/dependency-check-${DEP_CHECK_VERSION}
 
                 # Install Java (required for OWASP Dependency Check)
                 if ! command -v java &> /dev/null; then
-                  echo "📦 Installing OpenJDK (first time only)..."
-                  apk add --no-cache openjdk17-jre
+                  echo "📦 Installing OpenJDK 21 (first time only)..."
+                  apk add --no-cache openjdk21-jre wget unzip
                   echo "✅ Java installed: $(java -version 2>&1 | head -n 1)"
+                else
+                  # Ensure wget and unzip are available
+                  apk add --no-cache wget unzip 2>/dev/null || true
                 fi
 
                 # Check if already cached
@@ -210,16 +213,16 @@ spec:
                 else
                   echo "📥 Downloading OWASP Dependency-Check v${DEP_CHECK_VERSION} (first time only)..."
 
-                  # Install required tools
-                  apk add --no-cache wget unzip
+                  # Ensure parent directory exists
+                  mkdir -p /root/.cache/owasp
 
                   # Download and extract to cache
                   wget -q -O dependency-check.zip https://github.com/jeremylong/DependencyCheck/releases/download/v${DEP_CHECK_VERSION}/dependency-check-${DEP_CHECK_VERSION}-release.zip
-                  unzip -q dependency-check.zip -d /root/
-                  mv /root/dependency-check $CACHE_DIR
+                  unzip -q dependency-check.zip -d /root/.cache/owasp/
+                  mv /root/.cache/owasp/dependency-check $CACHE_DIR
                   rm dependency-check.zip
 
-                  echo "✅ OWASP Dependency-Check cached for future builds"
+                  echo "✅ OWASP Dependency-Check cached in organized directory for future builds"
                 fi
               '''
 
@@ -230,7 +233,7 @@ spec:
                 # Set Java options for better memory management
                 export JAVA_OPTS="-Xmx2048m -Xms512m"
 
-                /root/.dependency-check-12.1.0/bin/dependency-check.sh \
+                /root/.cache/owasp/dependency-check-12.1.0/bin/dependency-check.sh \
                     --project "node-project" \
                     --scan . \
                     --format HTML \
@@ -288,102 +291,204 @@ spec:
       }
     }
 
-    // stage('Gitleaks Scan') {
-    //   when { expression { env.BRANCH_NAME.startsWith("feature/") } }
-    //   steps {
-    //     echo "🔒 Scanning for secrets with Gitleaks"
-    //     container('gitleaks') {
-    //       script {
-    //         def exitCode = sh(
-    //           script: '''
-    //             gitleaks detect \
-    //               --source . \
-    //               --report-format json \
-    //               --report-path gitleaks-report.json \
-    //               --verbose \
-    //               --redact \
-    //               --no-git
-    //           ''',
-    //           returnStatus: true
-    //         )
+    stage('Gitleaks Scan') {
+      when { expression { env.BRANCH_NAME.startsWith("feature/") } }
+      steps {
+        echo "🔒 Scanning for secrets with Gitleaks"
+        container('gitleaks') {
+          script {
+            // Run Gitleaks scan with proper exit code handling
+            def exitCode = sh(
+              script: '''
+                set +e  # Don't exit on error, we handle exit codes manually
 
-    //         // Publish report regardless of result
-    //         if (fileExists('gitleaks-report.json')) {
-    //           def report = readJSON file: 'gitleaks-report.json'
+                # Create dedicated report directory
+                echo "📂 Preparing Gitleaks report directory..."
+                rm -rf gitleaks-report
+                mkdir -p gitleaks-report
 
-    //           if (report.size() > 0) {
-    //             echo "⚠️  Found ${report.size()} potential secret(s)!"
+                # Run gitleaks - exit codes: 0=clean, 1=leaks found, 2=error
+                echo "🚀 Running Gitleaks scan..."
+                gitleaks detect \
+                  --source . \
+                  --report-format json \
+                  --report-path gitleaks-report/gitleaks-report.json \
+                  --exit-code 1 \
+                  --redact \
+                  --no-git \
+                  --verbose
 
-    //             // Create HTML report
-    //             writeFile file: 'gitleaks-report.html', text: """
-    //               <!DOCTYPE html>
-    //               <html>
-    //               <head>
-    //                 <title>Gitleaks Security Scan Report</title>
-    //                 <style>
-    //                   body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-    //                   h1 { color: #d9534f; }
-    //                   .summary { background: white; padding: 20px; border-radius: 5px; margin-bottom: 20px; }
-    //                   .secret { background: white; border-left: 4px solid #d9534f; padding: 15px; margin: 10px 0; border-radius: 3px; }
-    //                   .info { color: #666; margin: 5px 0; }
-    //                   .file { font-weight: bold; color: #0275d8; }
-    //                   .rule { color: #5bc0de; font-weight: 500; }
-    //                   pre { background: #f5f5f5; padding: 10px; overflow-x: auto; border-radius: 3px; }
-    //                   .footer { margin-top: 30px; padding: 20px; background: white; border-radius: 5px; }
-    //                 </style>
-    //               </head>
-    //               <body>
-    //                 <h1>🔒 Gitleaks Security Scan Report</h1>
-    //                 <div class="summary">
-    //                   <h2>Summary</h2>
-    //                   <p>Found <strong style="color: #d9534f;">${report.size()}</strong> potential secret(s)</p>
-    //                   <p><strong>Action Required:</strong> Review and remove all detected secrets immediately!</p>
-    //                 </div>
-    //                 ${report.collect { leak ->
-    //                   """
-    //                   <div class="secret">
-    //                     <p class="file">📁 File: ${leak.File}</p>
-    //                     <p class="rule">🔍 Rule: ${leak.RuleID} - ${leak.Description ?: 'No description'}</p>
-    //                     <p class="info">📍 Line: ${leak.StartLine ?: 'N/A'}</p>
-    //                     <pre>${leak.Secret?.take(60) ?: '[REDACTED]'}...</pre>
-    //                     ${leak.Commit ? "<p class=\"info\">🔖 Commit: ${leak.Commit}</p>" : ""}
-    //                   </div>
-    //                   """
-    //                 }.join('')}
-    //                 <div class="footer">
-    //                   <h3>Next Steps:</h3>
-    //                   <ol>
-    //                     <li>Remove all detected secrets from the codebase</li>
-    //                     <li>Rotate/revoke any exposed credentials immediately</li>
-    //                     <li>Use environment variables or secret management tools</li>
-    //                     <li>Add patterns to .gitleaks.toml if false positives</li>
-    //                   </ol>
-    //                 </div>
-    //               </body>
-    //               </html>
-    //             """
+                EXIT_CODE=$?
+                echo "Gitleaks exit code: $EXIT_CODE"
+                echo "📊 Report directory contents:"
+                ls -lh gitleaks-report/ || echo "Directory empty"
+                exit $EXIT_CODE
+              ''',
+              returnStatus: true
+            )
 
-    //             publishHTML([
-    //               allowMissing: false,
-    //               alwaysLinkToLastBuild: true,
-    //               keepAll: true,
-    //               reportDir: '.',
-    //               reportFiles: 'gitleaks-report.html',
-    //               reportName: 'Gitleaks Security Report'
-    //             ])
+            echo "📊 Gitleaks scan completed with exit code: ${exitCode}"
 
-    //             // Fail the build if secrets found
-    //             error("❌ Gitleaks found ${report.size()} potential secret(s). Check the report and remove them!")
-    //           } else {
-    //             echo "✅ No secrets detected!"
-    //           }
-    //         } else {
-    //           echo "✅ No secrets detected!"
-    //         }
-    //       }
-    //     }
-    //   }
-    // }
+            // Process results based on exit code
+            if (exitCode == 1) {
+              // Secrets found - generate report
+              if (fileExists('gitleaks-report/gitleaks-report.json')) {
+                def report = readJSON file: 'gitleaks-report/gitleaks-report.json'
+                def secretCount = report.size()
+
+                echo "⚠️  Found ${secretCount} potential secret(s)!"
+
+                // Generate detailed HTML report
+                def htmlReport = """
+                <!DOCTYPE html>
+                <html>
+                <head>
+                  <title>Gitleaks Security Scan Report</title>
+                  <meta charset="UTF-8">
+                  <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f5f7fa; padding: 20px; }
+                    .container { max-width: 1200px; margin: 0 auto; }
+                    h1 { color: #d32f2f; margin-bottom: 10px; font-size: 28px; }
+                    .summary { background: white; padding: 25px; border-radius: 8px; margin-bottom: 25px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); border-left: 5px solid #d32f2f; }
+                    .summary h2 { color: #333; font-size: 20px; margin-bottom: 15px; }
+                    .stats { display: flex; gap: 20px; margin: 15px 0; }
+                    .stat-box { background: #fff3e0; padding: 15px; border-radius: 6px; flex: 1; text-align: center; border: 1px solid #ff9800; }
+                    .stat-box .number { font-size: 32px; font-weight: bold; color: #d32f2f; }
+                    .stat-box .label { color: #666; margin-top: 5px; font-size: 14px; }
+                    .secret { background: white; border-left: 4px solid #d32f2f; padding: 20px; margin: 15px 0; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.08); }
+                    .secret:hover { box-shadow: 0 4px 8px rgba(0,0,0,0.12); }
+                    .file { font-weight: 600; color: #1976d2; margin-bottom: 10px; font-size: 15px; }
+                    .rule { color: #00796b; font-weight: 500; margin: 8px 0; padding: 6px 10px; background: #e0f2f1; border-radius: 4px; display: inline-block; }
+                    .info { color: #666; margin: 8px 0; font-size: 14px; }
+                    .line-info { background: #f5f5f5; padding: 8px 12px; border-radius: 4px; font-family: monospace; font-size: 13px; margin: 10px 0; }
+                    pre { background: #263238; color: #aed581; padding: 15px; overflow-x: auto; border-radius: 6px; margin: 10px 0; font-size: 13px; line-height: 1.5; }
+                    .footer { margin-top: 30px; padding: 25px; background: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+                    .footer h3 { color: #d32f2f; margin-bottom: 15px; }
+                    .footer ol { margin-left: 20px; line-height: 1.8; color: #444; }
+                    .footer li { margin-bottom: 8px; }
+                    .severity-high { border-left-color: #d32f2f; }
+                    .severity-medium { border-left-color: #f57c00; }
+                    .severity-low { border-left-color: #fbc02d; }
+                  </style>
+                </head>
+                <body>
+                  <div class="container">
+                    <h1>🔒 Gitleaks Security Scan Report</h1>
+                    <div class="summary">
+                      <h2>Scan Summary</h2>
+                      <div class="stats">
+                        <div class="stat-box">
+                          <div class="number">${secretCount}</div>
+                          <div class="label">Secrets Detected</div>
+                        </div>
+                        <div class="stat-box">
+                          <div class="number">${report.collect { it.File }.unique().size()}</div>
+                          <div class="label">Files Affected</div>
+                        </div>
+                      </div>
+                      <p style="color: #d32f2f; font-weight: 600; margin-top: 15px;">⚠️ Action Required: Review and remediate all detected secrets immediately!</p>
+                    </div>
+
+                    <h2 style="margin: 25px 0 15px 0; color: #333;">Detected Secrets:</h2>
+                    ${report.collect { leak ->
+                      """
+                      <div class="secret">
+                        <div class="file">📁 ${leak.File ?: 'Unknown file'}</div>
+                        <div class="rule">🔍 ${leak.RuleID ?: 'Unknown rule'}${leak.Description ? " - ${leak.Description}" : ''}</div>
+                        <div class="line-info">📍 Line: ${leak.StartLine ?: 'N/A'}${leak.EndLine ? " - ${leak.EndLine}" : ''}</div>
+                        <pre>${leak.Secret?.take(100)?.replaceAll('<', '&lt;')?.replaceAll('>', '&gt;') ?: '[REDACTED]'}${leak.Secret?.length() > 100 ? '...' : ''}</pre>
+                        ${leak.Commit ? "<div class=\"info\">🔖 Commit: <code>${leak.Commit}</code></div>" : ""}
+                      </div>
+                      """
+                    }.join('')}
+
+                    <div class="footer">
+                      <h3>🛡️ Remediation Steps:</h3>
+                      <ol>
+                        <li><strong>Immediate Action:</strong> Remove ALL detected secrets from the codebase</li>
+                        <li><strong>Rotate Credentials:</strong> Invalidate and regenerate any exposed credentials, API keys, or tokens</li>
+                        <li><strong>Use Secret Management:</strong> Store secrets in environment variables, AWS Secrets Manager, HashiCorp Vault, or similar tools</li>
+                        <li><strong>Update .gitignore:</strong> Ensure sensitive files are excluded from version control</li>
+                        <li><strong>Configure Allowlist:</strong> Add false positives to <code>.gitleaks.toml</code> configuration file</li>
+                        <li><strong>Git History:</strong> Use tools like <code>git filter-branch</code> or <code>BFG Repo-Cleaner</code> to remove secrets from history</li>
+                      </ol>
+                      <p style="margin-top: 20px; padding: 15px; background: #e3f2fd; border-radius: 6px; color: #0d47a1;">
+                        <strong>💡 Prevention Tip:</strong> Install Gitleaks as a pre-commit hook to catch secrets before they're committed!
+                      </p>
+                    </div>
+                  </div>
+                </body>
+                </html>
+                """
+
+                writeFile file: 'gitleaks-report/gitleaks-report.html', text: htmlReport
+
+                // Publish HTML report
+                publishHTML([
+                  allowMissing: false,
+                  alwaysLinkToLastBuild: true,
+                  keepAll: true,
+                  reportDir: 'gitleaks-report',
+                  reportFiles: 'gitleaks-report.html',
+                  reportName: 'Gitleaks Security Report',
+                  reportTitles: 'Secret Detection Results',
+                  escapeUnderscores: false,
+                  includes: '**/*'
+                ])
+
+                // Archive JSON report for further processing
+                archiveArtifacts artifacts: 'gitleaks-report/gitleaks-report.json', allowEmptyArchive: true, fingerprint: true
+
+                // Mark build as UNSTABLE instead of failing (better for developer experience)
+                // Teams can configure to fail via quality gates if needed
+                unstable("⚠️  Gitleaks detected ${secretCount} potential secret(s). Review required before merging!")
+
+                // Optional: Uncomment to FAIL the build instead of marking unstable
+                // error("❌ Gitleaks found ${secretCount} potential secret(s). Build failed for security!")
+              }
+            } else if (exitCode == 2) {
+              // Scan error
+              error("❌ Gitleaks scan encountered an error. Check container logs.")
+            } else if (exitCode == 0) {
+              // No secrets found
+              echo "✅ No secrets detected! Code is clean and secure."
+
+              // Create success report
+              def successReport = """
+              <!DOCTYPE html>
+              <html>
+              <head><title>Gitleaks Report - Clean</title>
+              <style>
+                body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
+                .success { color: #2e7d32; font-size: 24px; margin: 20px; }
+                .icon { font-size: 64px; }
+              </style>
+              </head>
+              <body>
+                <div class="icon">✅</div>
+                <div class="success">No Secrets Detected!</div>
+                <p>Your codebase is clean and secure.</p>
+              </body>
+              </html>
+              """
+
+              writeFile file: 'gitleaks-report/gitleaks-report.html', text: successReport
+              publishHTML([
+                allowMissing: false,
+                alwaysLinkToLastBuild: true,
+                keepAll: true,
+                reportDir: 'gitleaks-report',
+                reportFiles: 'gitleaks-report.html',
+                reportName: 'Gitleaks Security Report',
+                escapeUnderscores: false,
+                includes: '**/*'
+              ])
+            }
+          }
+        }
+      }
+    }
 
     stage('Build Docker Image') {
       when { branch 'develop' }

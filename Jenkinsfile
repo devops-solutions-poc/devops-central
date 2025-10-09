@@ -202,7 +202,6 @@ spec:
                   --source . \
                   --report-format json \
                   --report-path gitleaks-report/gitleaks-report.json \
-                  --exit-code 1 \
                   --redact \
                   --no-git \
                   --verbose

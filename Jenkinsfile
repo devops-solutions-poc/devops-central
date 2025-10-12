@@ -71,7 +71,7 @@ spec:
     DOCKER_IMAGE = "node-project:${BUILD_NUMBER}"
     DEVTRON_BASE_URL = credentials('DEVTRON-BASE-URL') // Store base URL in credentials
     DEVTRON_ENDPOINT = '/orchestrator/webhook/ext-ci/3' // App-specific endpoint
-    APIKEY = 'wsdrfgjsdfuyaerbqbyfgja'
+  
   }
   triggers {
         pollSCM('H/5 * * * *')
@@ -127,6 +127,18 @@ spec:
         }
     }
 }
+
+    stage('Version Management') {
+            steps {
+                script {
+                    if (env.BRANCH_NAME == 'develop') {
+                        echo "Develop branch: updating version.txt"
+                    } else if (env.BRANCH_NAME.startsWith("feature/")) {
+                        echo "Feature branch: pulling latest version.txt from develop"
+                    }
+                }
+            }
+        }
 
     stage('Install Dependencies') {
       steps {
@@ -341,7 +353,11 @@ spec:
         }
       }
     }
-
+ 
+    stage('SonarQube Scan') {
+            when { expression { env.BRANCH_NAME.startsWith("feature/") } }
+            steps { echo "Running SonarQube Scan" }
+        }
     
 
     stage('Build Docker Image') {
@@ -414,14 +430,6 @@ spec:
     always {
       echo "✅ Pipeline finished for branch: ${env.BRANCH_NAME}"
 
-      // Print resource usage statistics
-      script {
-        sh '''
-          echo "📊 Resource Usage Summary:"
-          echo "================================"
-          kubectl top pods -n jenkins --selector=jenkins=slave 2>/dev/null || echo "⚠️  Metrics server not available"
-        '''
-      }
     }
   }
 }

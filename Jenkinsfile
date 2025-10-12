@@ -71,6 +71,7 @@ spec:
     DOCKER_IMAGE = "node-project:${BUILD_NUMBER}"
     DEVTRON_BASE_URL = credentials('DEVTRON-BASE-URL') // Store base URL in credentials
     DEVTRON_ENDPOINT = '/orchestrator/webhook/ext-ci/3' // App-specific endpoint
+    DOCKER_USER = 'gauravt11'
   
   }
   triggers {

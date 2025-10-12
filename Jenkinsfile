@@ -29,11 +29,9 @@ spec:
       requests:
         memory: "1Gi"
         cpu: "500m"
-        ephemeralStorage: "2Gi"
       limits:
         memory: "3Gi"
         cpu: "1000m"
-        ephemeralStorage: "5Gi"
     volumeMounts:
     - name: npm-cache
       mountPath: /root/.npm 
@@ -46,11 +44,9 @@ spec:
       requests:
         memory: "1Gi"
         cpu: "500m"
-        ephemeralStorage: "5Gi"
       limits:
         memory: "2Gi"
         cpu: "1000m"
-        ephemeralStorage: "10Gi"
     volumeMounts:
     - name: docker-storage
       mountPath: /var/lib/docker
@@ -111,15 +107,47 @@ spec:
       }
     }
 
+    stage('Monitor - Pipeline Start') {
+      steps {
+        script {
+          echo "========================================="
+          echo "📊 Pipeline Start - Resource Snapshot"
+          echo "========================================="
+          echo "Build: ${env.BUILD_NUMBER}"
+          echo "Branch: ${env.BRANCH_NAME}"
+          echo "Timestamp: ${new Date()}"
+          
+          container('docker') {
+            sh '''
+              echo ""
+              echo "💾 Docker Disk Space (Start):"
+              df -h /var/lib/docker
+              
+              echo ""
+              echo "🐳 Docker Images:"
+              docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | head -10
+            '''
+          }
+        }
+      }
+    }
+
     stage('Check Disk Space') {
       steps {
         script {
           container('docker') {
             sh '''
-              echo "💾 Initial Disk Space Check"
+              echo "💾 Detailed Disk Check"
               df -h /var/lib/docker
-              AVAILABLE=$(df /var/lib/docker | tail -1 | awk '{print $4}')
-              echo "Available space: $AVAILABLE"
+              
+              AVAILABLE_MB=$(df -m /var/lib/docker | tail -1 | awk '{print $4}')
+              echo "Available: ${AVAILABLE_MB} MB"
+              
+              if [ $AVAILABLE_MB -lt 1024 ]; then
+                echo "⚠️  WARNING: Less than 1GB available!"
+                echo "Running emergency cleanup..."
+                docker system prune -f
+              fi
             '''
           }
         }
@@ -274,7 +302,7 @@ spec:
       when { expression { env.BRANCH_NAME.startsWith("feature/") } }
       steps {
         container('node') {
-          echo "🛡️ Running OWASP Dependency Check (Universal - Maven/Node/Python)"
+          echo "🛡️ Running OWASP Dependency Check"
 
           script {
             withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_API_KEY')]) {
@@ -285,30 +313,26 @@ spec:
                 CACHE_DIR=/root/.cache/owasp/dependency-check-${DEP_CHECK_VERSION}
 
                 if ! command -v java &> /dev/null; then
-                  echo "📦 Installing OpenJDK 21 (first time only)..."
+                  echo "📦 Installing OpenJDK 21..."
                   apk add --no-cache openjdk21-jre wget unzip
-                  echo "✅ Java installed: $(java -version 2>&1 | head -n 1)"
                 else
                   apk add --no-cache wget unzip 2>/dev/null || true
                 fi
 
                 if [ -d "$CACHE_DIR" ]; then
-                  echo "✅ Using cached OWASP Dependency-Check v${DEP_CHECK_VERSION}"
+                  echo "✅ Using cached OWASP Dependency-Check"
                 else
-                  echo "📥 Downloading OWASP Dependency-Check v${DEP_CHECK_VERSION} (first time only)..."
+                  echo "📥 Downloading OWASP Dependency-Check..."
                   mkdir -p /root/.cache/owasp
                   wget -q -O dependency-check.zip https://github.com/jeremylong/DependencyCheck/releases/download/v${DEP_CHECK_VERSION}/dependency-check-${DEP_CHECK_VERSION}-release.zip
                   unzip -q dependency-check.zip -d /root/.cache/owasp/
                   mv /root/.cache/owasp/dependency-check $CACHE_DIR
                   rm dependency-check.zip
-                  echo "✅ OWASP Dependency-Check cached in organized directory for future builds"
                 fi
               '''
 
               sh """
-                echo "🚀 Running OWASP Dependency Check scan"
                 export JAVA_OPTS="-Xmx2048m -Xms512m"
-
                 /root/.cache/owasp/dependency-check-12.1.0/bin/dependency-check.sh \
                     --project "node-project" \
                     --scan . \
@@ -324,9 +348,6 @@ spec:
                     --disableOssIndex \
                     --enableExperimental \
                     || true
-
-                echo "✅ Scan completed. Reports available in odc-report/"
-                ls -lh odc-report || echo "No reports generated"
               """
             }
 
@@ -338,14 +359,8 @@ spec:
                   healthy: 0,
                   unhealthy: 1
                 )
-              } catch (Exception e1) {
-                echo "⚠️ recordIssues failed, trying dependencyCheckPublisher..."
-                try {
-                  dependencyCheckPublisher pattern: 'odc-report/dependency-check-report.xml'
-                } catch (Exception e2) {
-                  echo "⚠️ Both methods failed. Check OWASP Dependency-Check plugin is installed."
-                  echo "HTML report will still be available."
-                }
+              } catch (Exception e) {
+                echo "⚠️ recordIssues not available, HTML report will be published"
               }
             }
 
@@ -410,6 +425,30 @@ spec:
       }
     }
 
+    stage('Monitor - After Build') {
+      when { branch 'develop' }
+      steps {
+        script {
+          container('docker') {
+            sh '''
+              echo "========================================="
+              echo "📊 After Build - Resource Check"
+              echo "========================================="
+              df -h /var/lib/docker
+              
+              echo ""
+              echo "Images:"
+              docker images | head -10
+              
+              echo ""
+              echo "Disk usage breakdown:"
+              docker system df
+            '''
+          }
+        }
+      }
+    }
+
     stage('Push Docker Image') {
       when { branch 'develop' }
       steps {
@@ -445,6 +484,25 @@ spec:
       when { branch 'develop' }
       steps { echo "📝 Pushing updated version.txt from develop" }
     }
+
+    stage('Monitor - Pipeline End') {
+      steps {
+        script {
+          container('docker') {
+            sh '''
+              echo "========================================="
+              echo "📊 Pipeline End - Final Resource State"
+              echo "========================================="
+              df -h /var/lib/docker
+              
+              echo ""
+              echo "Final Docker system usage:"
+              docker system df
+            '''
+          }
+        }
+      }
+    }
   }
 
   post {
@@ -454,10 +512,20 @@ spec:
         try {
           container('docker') {
             sh '''
-              echo "🧹 Final cleanup in post-always block..."
-              docker system prune -f --volumes || true
-              echo "💾 Final disk usage:"
+              echo "========================================="
+              echo "🧹 Final Cleanup"
+              echo "========================================="
+              
+              echo "Before cleanup:"
               df -h /var/lib/docker
+              docker system df
+              
+              docker system prune -f --volumes || true
+              
+              echo ""
+              echo "After cleanup:"
+              df -h /var/lib/docker
+              docker system df
             '''
           }
         } catch (Exception e) {
@@ -465,7 +533,7 @@ spec:
         }
       }
       
-      // Clean up workspace to save space
+      // Clean up workspace
       cleanWs(
         deleteDirs: true,
         disableDeferredWipeout: true,
@@ -500,7 +568,6 @@ spec:
     failure {
       echo "❌ Build failed. Check logs for details."
       script {
-        // Additional cleanup on failure
         try {
           container('docker') {
             sh 'docker system prune -af || true'
@@ -514,7 +581,6 @@ spec:
     aborted {
       echo "⚠️ Build was aborted"
       script {
-        // Cleanup on abort
         try {
           container('docker') {
             sh 'docker system prune -af || true'

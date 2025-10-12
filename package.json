@@ -47,7 +47,9 @@
     "coverageReporters": [
       "text",
       "text-summary",
-      "cobertura"
+      "cobertura",
+      "html",
+      "lcov"
     ]
   },
   "devDependencies": {
